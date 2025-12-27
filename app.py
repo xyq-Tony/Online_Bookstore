@@ -1,14 +1,54 @@
+import os
+import sys
+import re
+import random
+from datetime import date
 from flask import Flask, render_template, jsonify, request, send_from_directory
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from sqlalchemy import func, extract
 from models import db, Book, Category, Customer, Order, OrderItem
-import os, random, re
-from datetime import date
 
+
+# ---【终极修复】获取程序所在的真实目录 ---
+def get_base_path():
+    """
+    获取 exe 文件所在的绝对路径。
+    无论是在 VS Code 运行还是双击 exe 运行，这个函数都能找到正确的位置。
+    """
+    if getattr(sys, 'frozen', False):
+        # 如果是打包后的 exe，sys.executable 就是 exe 文件的路径
+        return os.path.dirname(sys.executable)
+    else:
+        # 如果是源码运行，就用当前文件的目录
+        return os.path.dirname(os.path.abspath(__file__))
+# --- 核心修改 1: 路径处理函数 ---
+def resource_path(relative_path):
+    """ 获取资源的绝对路径，适配 PyInstaller 打包后的临时目录 """
+    if hasattr(sys, '_MEIPASS'):
+        # 如果是打包后的 exe 运行，文件会被解压到 sys._MEIPASS
+        return os.path.join(sys._MEIPASS, relative_path)
+    # 如果是源码运行，就用当前目录
+    return os.path.join(os.path.abspath("."), relative_path)
+
+# --- 核心修改 2: 初始化 Flask ---
+# 显式指定模板文件夹的位置
 # Flask： Python轻量级Web框架
-app = Flask(__name__)
+app = Flask(__name__, template_folder=resource_path('templates'))
+
+# --- 核心修改 3: 数据库配置 ---
+# 1. 获取当前基础路径 (即 exe 文件所在的文件夹)
+base_dir = get_base_path() # 获取 exe 所在目录
+# 2. 拼接出 instance 文件夹的路径
+instance_dir = os.path.join(base_dir, 'instance')
+# 3. 关键步骤：如果 instance 文件夹不存在，自动创建它
+# (防止你把 exe 发给别人，但忘了拷 instance 文件夹，导致程序报错找不到目录)
+if not os.path.exists(instance_dir):
+    os.makedirs(instance_dir)
+
+# 4. 指向 instance 文件夹里的数据库文件
+db_path = os.path.join(instance_dir, 'cloud_bookstore_real.db')
 # 配置 SQLAlchemy 使用的数据库 URI：cloud_bookstore_real.db
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///cloud_bookstore_real.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + db_path
 # 设置 Flask 的 SECRET_KEY
 app.config['SECRET_KEY'] = 'cloud-key-pro-60-real'
 # 禁用 SQLAlchemy 对对象修改的事件追踪
@@ -38,21 +78,6 @@ def load_user(user_id):
     return Customer.query.get(int(user_id))
 
 
-# --- 图片服务路由 ---
-@app.route('/images/<path:filename>')
-def serve_images(filename):
-    """
-    提供图片文件服务的路由函数
-    
-    该函数用于处理/images/路径下的文件请求，根据传入的文件路径返回对应的图片文件
-    
-    参数:
-        filename (str): 请求的图片文件路径，包含文件名和可能的子目录路径
-    
-    返回:
-        Response: 指定路径图片文件的响应对象，用于在浏览器中显示或下载图片
-    """
-    return send_from_directory('images', filename)
 
 # --- API 接口 ---
 @app.route('/api/books')
@@ -345,6 +370,19 @@ def my_orders():
 
 @app.route('/') # 渲染后的index.html模板响应对象
 def index(): return render_template('index.html')
+
+# --- 2. 修复图片路由 (加入调试打印) ---
+@app.route('/images/<path:filename>')
+def serve_images(filename):
+    # 获取 exe 同级目录下的 images 文件夹
+    base_dir = get_base_path()
+    images_dir = os.path.join(base_dir, 'images')
+    
+    # 【调试代码】在黑框里打印出它到底在哪个路径找图片
+    print(f"DEBUG: 正在查找图片: {filename}")
+    print(f"DEBUG: 查找路径为: {os.path.join(images_dir, filename)}")
+    
+    return send_from_directory(images_dir, filename)
 
 # ==========================================
 # 构建数据库（60本书）

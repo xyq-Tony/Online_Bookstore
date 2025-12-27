@@ -497,6 +497,7 @@ def init_data():
         db.session.commit() # 正式写入数据库
 
 if __name__ == '__main__':
-    if not os.path.exists('cloud_bookstore_real.db'):
+    db_path = os.path.join('instance', 'cloud_bookstore_real.db')
+    if not os.path.exists(db_path):
         init_data() # 如果不存在，初始化数据库和数据
     app.run(debug=True)

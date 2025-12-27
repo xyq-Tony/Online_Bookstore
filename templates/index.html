@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>云书店 - 真实书库</title>
+    <meta name="referrer" content="no-referrer">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
+    <style>
+        :root { --primary: #007bff; --accent: #ff4d4f; }
+        body { background: #f4f6f9; font-family: "Microsoft YaHei", sans-serif; }
+        
+        /* 样式复用上一版，此处针对图片和分页微调 */
+        .book-img { 
+            height: 180px; 
+            width: 100%;
+            object-fit: contain; /* 关键：保持封面比例不拉伸 */
+            margin-bottom: 10px; 
+            transition: transform 0.2s;
+        }
+        .book-card:hover .book-img { transform: scale(1.05); }
+        
+        /* 分页条样式 */
+        .page-link { color: #333; border: none; margin: 0 2px; border-radius: 4px; }
+        .page-item.active .page-link { background: var(--primary); color: #fff; }
+        
+        /* 保持之前的布局样式... */
+        .top-nav { background: #fff; padding: 15px 0; border-bottom: 1px solid #eee; }
+        .header { background: #fff; padding: 20px 0; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.02); }
+        .logo { font-size: 32px; font-weight: 800; color: var(--primary); text-decoration: none; display: flex; align-items: center; }
+        .search-box input { border-radius: 20px 0 0 20px; border: 2px solid var(--primary); padding-left: 20px; }
+        .search-box button { border-radius: 0 20px 20px 0; background: var(--primary); border: 2px solid var(--primary); color: #fff; padding: 0 25px; font-weight: bold; }
+        .bestseller-bar { background: #fff; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+        .scroll-container { display: flex; overflow-x: auto; gap: 15px; padding-bottom: 10px; }
+        .scroll-item img { width: 100px; height: 140px; object-fit: cover; border-radius: 4px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .sidebar { background: #fff; border-radius: 8px; overflow: hidden; }
+        .cat-btn { display: block; padding: 10px 15px 10px 30px; color: #666; text-decoration: none; border-left: 4px solid transparent; }
+        .cat-btn.active { background: #e3f2fd; color: var(--primary); border-left-color: var(--primary); }
+        .cat-group-title { padding: 12px 15px; font-weight: bold; background: #f8f9fa; }
+        .content-area { background: #fff; padding: 20px; border-radius: 8px; min-height: 600px; }
+        .book-card { border: 1px solid #eee; padding: 10px; border-radius: 6px; height: 100%; background: #fff; }
+        .cart-float { position: fixed; right: 30px; bottom: 30px; width: 60px; height: 60px; background: var(--primary); color: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 28px; cursor: pointer; z-index: 100; }
+        .cart-count { position: absolute; top: 0; right: 0; background: var(--accent); color: #fff; font-size: 12px; padding: 2px 6px; border-radius: 10px; }
+    </style>
+</head>
+<body>
+
+<!-- 顶部导航 -->
+<div class="top-nav">
+    <div class="container d-flex justify-content-between align-items-center">
+        <div id="auth-panel"></div>
+        <div>
+            <a href="#" class="text-decoration-none text-primary fw-bold mx-3" onclick="showMyOrders()">我的订单</a>
+            <a href="#" class="text-decoration-none text-primary fw-bold" onclick="showCart()">购物车</a>
+        </div>
+    </div>
+</div>
+
+<div class="header">
+    <div class="container">
+        <div class="row align-items-center">
+            <div class="col-md-4"><a href="/" class="logo"><i class="bi bi-book-half me-2"></i> 云书店</a></div>
+            <div class="col-md-6">
+                <div class="input-group search-box">
+                    <input type="text" id="keyword" class="form-control" placeholder="🔍 搜索：书名 / 作者 / 出版社">
+                    <button class="btn" onclick="state.page=1; loadBooks()">搜索</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="container">
+    <!-- 畅销榜 -->
+    <div class="bestseller-bar">
+        <h5 class="fw-bold text-danger border-start border-4 border-danger ps-2 mb-3">🔥 热门畅销书架</h5>
+        <div class="scroll-container" id="bestseller-list"></div>
+    </div>
+
+    <div class="row g-4">
+        <!-- 分类侧边栏 -->
+        <div class="col-md-2">
+            <div class="sidebar" id="category-sidebar"></div>
+        </div>
+
+        <!-- 主内容区 -->
+        <div class="col-md-10">
+            <div class="content-area">
+                <!-- 筛选 -->
+                <div class="d-flex gap-2 mb-3 align-items-center flex-wrap">
+                    <span class="fw-bold text-secondary">筛选:</span>
+                    <select id="filter-publisher" class="form-select form-select-sm" style="width:140px" onchange="state.page=1; loadBooks()"><option value="">所有出版社</option></select>
+                    <select id="filter-year" class="form-select form-select-sm" style="width:120px" onchange="state.page=1; loadBooks()">
+                        <option value="">出版年份</option>
+                        <option value="2024">2024</option><option value="2023">2023</option><option value="2022">2022</option>
+                    </select>
+                </div>
+
+                <!-- 图书列表 -->
+                <div class="row row-cols-2 row-cols-md-4 row-cols-lg-5 g-3" id="book-grid"></div>
+                
+                <!-- 完整的分页条 -->
+                <nav class="mt-4">
+                    <ul class="pagination justify-content-center" id="pagination-ul"></ul>
+                </nav>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 悬浮购物车 -->
+<div class="cart-float" onclick="showCart()">
+    <i class="bi bi-cart3"></i>
+    <div class="cart-count" id="cart-badge">0</div>
+</div>
+
+<!-- 模态框组 (保持原样) -->
+<div class="modal fade" id="authModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5>登录/注册</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><input id="u_name" class="form-control mb-2" placeholder="用户名"><input id="u_pass" type="password" class="form-control mb-2" placeholder="密码"><button class="btn btn-primary w-100" onclick="doAuth()">提交</button></div></div></div></div>
+<div class="modal fade" id="cartModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5>购物车</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body" id="cart-body"></div><div class="modal-footer"><button class="btn btn-success" onclick="checkout()">结算</button></div></div></div></div>
+<div class="modal fade" id="orderModal" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content"><div class="modal-header"><h5>订单</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body" id="order-history"></div></div></div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+    // 全局状态
+    let state = {
+        page: 1,
+        catId: null,
+        user: null,
+        cart: JSON.parse(localStorage.getItem('cart_real') || '[]')
+    };
+
+    document.addEventListener('DOMContentLoaded', () => {
+        initAuth();
+        loadCategories();
+        loadBestsellers();
+        loadFilters();
+        loadBooks();
+        updateCartBadge();
+    });
+
+    // 1. 加载图书 (含图片显示逻辑)
+    async function loadBooks() {
+        const pub = document.getElementById('filter-publisher').value;
+        const year = document.getElementById('filter-year').value;
+        const kw = document.getElementById('keyword').value;
+        
+        let url = `/api/books?page=${state.page}`;
+        if (state.catId) url += `&cat_id=${state.catId}`;
+        if (pub) url += `&publisher=${pub}`;
+        if (year) url += `&year=${year}`;
+        if (kw) url += `&keyword=${kw}`;
+
+        const res = await fetch(url);
+        const data = await res.json();
+        
+        // 渲染图书卡片
+        document.getElementById('book-grid').innerHTML = data.books.map(b => `
+            <div class="col">
+                <div class="book-card position-relative">
+                    <!-- 关键修改：这里原来是 b.image_url，现在改为 b.image -->
+                    <img src="${b.image || 'https://via.placeholder.com/200x260?text=No+Image'}"
+                        class="book-img"
+                        referrerpolicy="no-referrer"
+                        onerror="this.src='https://via.placeholder.com/200x260?text=Err'">
+                    
+                    <h6 class="text-truncate" title="${b.title}">${b.title}</h6>
+                    <div class="small text-muted text-truncate">${b.author}</div>
+                    <div class="d-flex justify-content-between align-items-center mt-2">
+                        <span class="fw-bold text-danger">¥${b.sale_price}</span>
+                        <span class="badge bg-light text-secondary border">${b.publisher.substring(0,4)}</span>
+                    </div>
+                    <button class="btn btn-sm btn-outline-primary w-100 mt-2" onclick="addToCart(${b.id}, '${b.title}', ${b.sale_price})">加入购物车</button>
+                </div>
+            </div>
+        `).join('');
+
+        renderPagination(data.total_pages, data.current_page);
+    }
+
+    // 2. 渲染分页条
+    function renderPagination(total, current) {
+        const ul = document.getElementById('pagination-ul');
+        let html = '';
+        
+        // 上一页
+        html += `<li class="page-item ${current==1?'disabled':''}"><a class="page-link" href="#" onclick="changePage(${current-1})">«</a></li>`;
+        
+        // 页码
+        for(let i=1; i<=total; i++) {
+            html += `<li class="page-item ${i==current?'active':''}"><a class="page-link" href="#" onclick="changePage(${i})">${i}</a></li>`;
+        }
+        
+        // 下一页
+        html += `<li class="page-item ${current==total?'disabled':''}"><a class="page-link" href="#" onclick="changePage(${current+1})">»</a></li>`;
+        
+        ul.innerHTML = html;
+    }
+
+    function changePage(p) {
+        if(p<1) return;
+        state.page = p;
+        loadBooks();
+        window.scrollTo(0, 0); // 回到顶部
+    }
+
+    // 3. 加载分类
+    async function loadCategories() {
+        const res = await fetch('/api/categories');
+        const data = await res.json();
+        document.getElementById('category-sidebar').innerHTML = 
+            `<a href="#" class="cat-btn fw-bold" onclick="selectCat(null, this)">📚 全部图书</a>` +
+            data.map(root => `
+                <div class="cat-group-title mt-2">${root.name}</div>
+                ${root.children.map(c => 
+                    `<a href="#" class="cat-btn" id="cat-${c.id}" onclick="selectCat(${c.id}, this)">${c.name}</a>`
+                ).join('')}
+            `).join('');
+    }
+
+    function selectCat(id, el) {
+        state.catId = id;
+        state.page = 1;
+        document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+        el.classList.add('active');
+        loadBooks();
+    }
+
+    // 4. 其他基础逻辑 (保持不变)
+    async function loadBestsellers() {
+        const res = await fetch('/api/rankings');
+        const books = await res.json();
+        document.getElementById('bestseller-list').innerHTML = books.map(b => `
+            <div class="flex-shrink-0 text-center" style="width:110px; cursor:pointer" onclick="addToCart(${b.id}, '${b.title}', ${b.sale_price})">
+                <img src="${b.image}" style="width:100px; height:140px; object-fit:cover; border-radius:4px">
+                <div class="small text-truncate mt-1">${b.title}</div>
+                <div class="text-danger small fw-bold">¥${b.sale_price}</div>
+            </div>
+        `).join('');
+    }
+    
+    async function loadFilters() {
+        const res = await fetch('/api/filters');
+        const data = await res.json();
+        data.publishers.forEach(p => document.getElementById('filter-publisher').innerHTML += `<option value="${p}">${p}</option>`);
+    }
+
+    // 购物车与用户逻辑
+    function addToCart(id, title, price) {
+        let item = state.cart.find(i=>i.id===id);
+        if(item) item.qty++; else state.cart.push({id,title,price,qty:1});
+        updateCartBadge();
+        // 动画提示
+        const badge = document.getElementById('cart-badge');
+        badge.style.transform="scale(1.5)"; setTimeout(()=>badge.style.transform="scale(1)", 200);
+    }
+    function updateCartBadge() {
+        localStorage.setItem('cart_real', JSON.stringify(state.cart));
+        document.getElementById('cart-badge').innerText = state.cart.reduce((a,b)=>a+b.qty,0);
+    }
+    function showCart() {
+        let total=0;
+        document.getElementById('cart-body').innerHTML = state.cart.length ? state.cart.map((i,idx)=>{
+            total+=i.price*i.qty;
+            return `<div class="d-flex justify-content-between py-2 border-bottom">
+                <span>${i.title}</span>
+                <span>¥${i.price} x ${i.qty} 
+                <button class="btn btn-sm btn-light ms-2" onclick="modCart(${idx}, -1)">-</button>
+                <button class="btn btn-sm btn-light" onclick="modCart(${idx}, 1)">+</button></span>
+            </div>`
+        }).join('') + `<div class="text-end fw-bold mt-3 text-danger fs-5">总计: ¥${total.toFixed(2)}</div>` : '<p class="text-center">空空如也</p>';
+        new bootstrap.Modal(document.getElementById('cartModal')).show();
+    }
+    function modCart(idx, d) { state.cart[idx].qty+=d; if(state.cart[idx].qty<=0) state.cart.splice(idx,1); updateCartBadge(); showCart(); }
+    
+    // 认证与订单
+    async function initAuth() {
+        const res = await fetch('/api/user_info');
+        const data = await res.json();
+        const p = document.getElementById('auth-panel');
+        if(data.is_login) { state.user=data.username; p.innerHTML=`<span class="fw-bold">你好, ${data.username}</span> <button class="btn btn-sm btn-outline-danger ms-2" onclick="logout()">退出</button>`; }
+        else p.innerHTML=`<button class="btn btn-primary btn-sm rounded-pill px-3" data-bs-toggle="modal" data-bs-target="#authModal">登录/注册</button>`;
+    }
+    async function doAuth() {
+        const u=document.getElementById('u_name').value, p=document.getElementById('u_pass').value;
+        await fetch('/api/register', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+        const res = await fetch('/api/login', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+        if(res.ok) location.reload(); else alert('登录失败');
+    }
+    async function logout(){ await fetch('/api/logout'); location.reload(); }
+    async function checkout() {
+        if(!state.user) return new bootstrap.Modal(document.getElementById('authModal')).show();
+        const res=await fetch('/api/order', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items:state.cart})});
+        if(res.ok) { alert('下单成功'); state.cart=[]; updateCartBadge(); location.reload(); }
+    }
+    async function showMyOrders() {
+        if(!state.user) return new bootstrap.Modal(document.getElementById('authModal')).show();
+        const res = await fetch('/api/my_orders'); const data = await res.json();
+        document.getElementById('order-history').innerHTML = data.map(o=>`<div class="card mb-2 p-2 bg-light"><div>订单号 #${o.id} <span class="float-end fw-bold text-success">¥${o.total_amount}</span></div><small class="text-muted">${o.items.map(i=>`${i.book_title} x${i.quantity}`).join(', ')}</small></div>`).join('');
+        new bootstrap.Modal(document.getElementById('orderModal')).show();
+    }
+</script>
+</body>
+</html>

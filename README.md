@@ -36,8 +36,7 @@
 启动穿透工具：
 双击 ngrok.exe。
 在弹出的新黑框中输入以下命令并回车：
-code
-Bash
+
 ngrok http 5000
 获取链接：
 查看屏幕上的 Forwarding 一行，复制类似这样的链接：

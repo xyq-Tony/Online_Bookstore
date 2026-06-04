@@ -2,10 +2,14 @@ import os
 import sys
 import re
 import random
+import logging
 from datetime import date
-from flask import Flask, render_template, jsonify, request, send_from_directory
+from time import perf_counter
+from uuid import uuid4
+from flask import Flask, render_template, jsonify, request, send_from_directory, g
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from sqlalchemy import func, extract
+from bookstore_logging import configure_logging
 from models import db, Book, Category, Customer, Order, OrderItem
 
 
@@ -28,27 +32,32 @@ def resource_path(relative_path):
         # 如果是打包后的 exe 运行，文件会被解压到 sys._MEIPASS
         return os.path.join(sys._MEIPASS, relative_path)
     # 如果是源码运行，就用当前目录
-    return os.path.join(os.path.abspath("."), relative_path)
+    return os.path.join(get_base_path(), relative_path)
 
 # --- 核心修改 2: 初始化 Flask ---
 # 显式指定模板文件夹的位置
 # Flask： Python轻量级Web框架
 app = Flask(__name__, template_folder=resource_path('templates'))
+logger = configure_logging()
 
 # --- 核心修改 3: 数据库配置 ---
 # 1. 获取当前基础路径 (即 exe 文件所在的文件夹)
 base_dir = get_base_path() # 获取 exe 所在目录
 # 2. 拼接出 instance 文件夹的路径
-instance_dir = os.path.join(base_dir, 'instance')
+instance_dir = os.getenv('BOOKSTORE_INSTANCE_DIR', os.path.join(base_dir, 'instance'))
+if not os.path.isabs(instance_dir):
+    instance_dir = os.path.join(base_dir, instance_dir)
 # 3. 关键步骤：如果 instance 文件夹不存在，自动创建它
 # (防止你把 exe 发给别人，但忘了拷 instance 文件夹，导致程序报错找不到目录)
 if not os.path.exists(instance_dir):
     os.makedirs(instance_dir)
 
 # 4. 指向 instance 文件夹里的数据库文件
-db_path = os.path.join(instance_dir, 'cloud_bookstore_real.db')
+db_filename = os.getenv('BOOKSTORE_DB_FILENAME', 'cloud_bookstore_real.db')
+db_path = os.path.join(instance_dir, db_filename)
+database_uri_override = os.getenv('BOOKSTORE_DATABASE_URI')
 # 配置 SQLAlchemy 使用的数据库 URI：cloud_bookstore_real.db
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + db_path
+app.config['SQLALCHEMY_DATABASE_URI'] = database_uri_override or ('sqlite:///' + db_path)
 # 设置 Flask 的 SECRET_KEY
 app.config['SECRET_KEY'] = 'cloud-key-pro-60-real'
 # 禁用 SQLAlchemy 对对象修改的事件追踪
@@ -57,7 +66,65 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app) # 将 db（SQLAlchemy 对象）与 Flask 应用绑定
 
 # Login_Manager 用于管理用户登录状态
-login_manager = LoginManager(app) 
+login_manager = LoginManager(app)
+
+
+def get_request_duration_ms():
+    started_at = getattr(g, 'request_started_at', None)
+    if started_at is None:
+        return "-"
+    return int((perf_counter() - started_at) * 1000)
+
+
+@app.before_request
+def start_request_logging():
+    g.request_id = uuid4().hex[:12]
+    g.request_started_at = perf_counter()
+    g.request_duration_ms = "-"
+    g.response_status = "-"
+    g.log_user = "-"
+
+
+@app.after_request
+def finish_request_logging(response):
+    duration_ms = get_request_duration_ms()
+    g.request_duration_ms = duration_ms
+    g.response_status = response.status_code
+    if response.status_code >= 500:
+        level = logging.ERROR
+    elif response.status_code >= 400:
+        level = logging.WARNING
+    else:
+        level = logging.INFO
+    logger.log(
+        level,
+        'request_completed',
+        extra={
+            'event': 'http_request_completed',
+            'status': response.status_code,
+            'duration_ms': duration_ms,
+            'user': getattr(g, 'log_user', '-')
+        }
+    )
+    response.headers['X-Request-ID'] = getattr(g, 'request_id', '-')
+    return response
+
+
+@app.teardown_request
+def log_request_exception(error):
+    if error is not None:
+        duration_ms = get_request_duration_ms()
+        g.request_duration_ms = duration_ms
+        logger.error(
+            'request_unhandled_exception',
+            exc_info=(type(error), error, error.__traceback__),
+            extra={
+                'event': 'request_unhandled_exception',
+                'status': getattr(g, 'response_status', 500),
+                'duration_ms': duration_ms,
+                'user': getattr(g, 'log_user', '-')
+            }
+        )
 
 # 根据 user_id 加载用户
 @login_manager.user_loader 
@@ -125,6 +192,19 @@ def get_books():
     # 执行分页查询，每页12条记录
     # MySQL等价查询: LIMIT 12 OFFSET ((page-1)*12)
     pagination = query.paginate(page=page, per_page=12, error_out=False) # 改为每页12本，布局更整齐
+    logger.debug(
+        'books_queried',
+        extra={
+            'event': 'books_query',
+            'page': page,
+            'category_id': cat_id or '-',
+            'keyword': keyword or '-',
+            'publisher': publisher or '-',
+            'year': year or '-',
+            'result_count': len(pagination.items),
+            'total_items': pagination.total
+        }
+    )
     
     return jsonify({
         'books': [b.to_dict() for b in pagination.items],
@@ -212,10 +292,12 @@ def login():
         成功时返回JSON响应: {'msg': '登录成功', 'user': 用户名}，状态码200
         失败时返回JSON响应: {'error': '失败'}，状态码401
     """
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    username = data.get('username', '-')
+    g.log_user = username
     # 根据用户名查询用户信息
     # SELECT * FROM customer WHERE username = ? LIMIT 1;
-    user = Customer.query.filter_by(username=data['username']).first()
+    user = Customer.query.filter_by(username=username).first()
     """
     用户表结构
     CREATE TABLE customer (
@@ -229,9 +311,24 @@ def login():
     # SELECT COUNT(*) FROM customer WHERE username = ?;
     # 完整的用户信息查询（用于密码验证）
     # SELECT id, username, password_hash FROM customer WHERE username = ?;
-    if user and user.check_password(data['password']):
+    if user and user.check_password(data.get('password', '')):
         login_user(user)
+        g.log_user = user.username
+        logger.info(
+            'user_logged_in',
+            extra={
+                'event': 'user_login_success',
+                'user': user.username
+            }
+        )
         return jsonify({'msg': '登录成功', 'user': user.username})
+    logger.warning(
+        'user_login_failed',
+        extra={
+            'event': 'user_login_failed',
+            'user': username
+        }
+    )
     return jsonify({'error': '失败'}), 401
 
 @app.route('/api/register', methods=['POST'])
@@ -250,16 +347,34 @@ def register():
                  - 成功时返回: {'msg': 'OK'}, 状态码200
                  - 用户名已存在时返回: {'error': '已存在'}, 状态码400
     """
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    username = data.get('username', '-')
+    g.log_user = username
     # 检查用户名是否已存在，如果存在则返回错误信息
     # SELECT * FROM customer WHERE username = ? LIMIT 1;
-    if Customer.query.filter_by(username=data['username']).first(): return jsonify({'error': '已存在'}), 400
-    user = Customer(username=data['username'])
-    user.set_password(data['password'])
+    if Customer.query.filter_by(username=username).first():
+        logger.warning(
+            'user_register_conflict',
+            extra={
+                'event': 'user_register_conflict',
+                'user': username
+            }
+        )
+        return jsonify({'error': '已存在'}), 400
+    user = Customer(username=username)
+    user.set_password(data.get('password', ''))
     # 如果不存在则插入新用户
     # INSERT INTO customer (username, password_hash) VALUES (?, ?);
     db.session.add(user)
     db.session.commit()
+    g.log_user = user.username
+    logger.info(
+        'user_registered',
+        extra={
+            'event': 'user_register_success',
+            'user': user.username
+        }
+    )
     return jsonify({'msg': 'OK'})
 
 @app.route('/api/logout')
@@ -278,6 +393,14 @@ def logout():
         Response: JSON格式的响应，包含登出成功的消息
         示例: {"msg": "OK"}
     """
+    g.log_user = current_user.username
+    logger.info(
+        'user_logged_out',
+        extra={
+            'event': 'user_logout',
+            'user': current_user.username
+        }
+    )
     logout_user()
     return jsonify({'msg': 'OK'})
 
@@ -313,7 +436,9 @@ def create_order():
     4. 插入订单项: INSERT INTO order_items (order_id, book_id, quantity, price) VALUES (?, ?, ?, ?)
     5. 更新订单总金额: UPDATE orders SET total_amount = ? WHERE id = ?
     """
-    items = request.json.get('items', [])
+    payload = request.get_json(silent=True) or {}
+    items = payload.get('items', [])
+    g.log_user = current_user.username
     try:
         # 创建新订单记录，初始总金额为0
         # INSERT INTO orders (customer_id, total_amount, created_at) VALUES (?, 0, NOW())
@@ -327,7 +452,10 @@ def create_order():
             # 根据ID查询图书信息
             # MySQL等价语句: SELECT * FROM books WHERE id = ? LIMIT 1
             book = Book.query.get(i['id'])
-            if book.stock < i['qty']: raise Exception(f"{book.title} 库存不足")
+            if book is None:
+                raise Exception(f"book_not_found:{i['id']}")
+            if book.stock < i['qty']:
+                raise Exception(f"{book.title} 库存不足")
             
             # 更新图书库存和销量
             # MySQL等价语句: UPDATE books SET stock = stock - ?, sales_count = sales_count + ? WHERE id = ?
@@ -338,16 +466,45 @@ def create_order():
             # 添加订单项记录
             # MySQL等价语句: INSERT INTO order_items (order_id, book_id, quantity, price) VALUES (?, ?, ?, ?)
             db.session.add(OrderItem(order_id=order.id, book_id=book.id, quantity=i['qty'], price=book.sale_price))
+            logger.debug(
+                'order_item_reserved',
+                extra={
+                    'event': 'order_item_reserved',
+                    'order_id': order.id,
+                    'book_id': book.id,
+                    'book_title': book.title,
+                    'quantity': i['qty']
+                }
+            )
         
         # 更新订单总金额
         # MySQL等价语句: UPDATE orders SET total_amount = ? WHERE id = ?
         order.total_amount = total
         db.session.commit()
+        logger.info(
+            'order_created',
+            extra={
+                'event': 'order_create_success',
+                'order_id': order.id,
+                'item_count': len(items),
+                'total_amount': total,
+                'user': current_user.username
+            }
+        )
         return jsonify({'msg': 'OK', 'id': order.id})
     except Exception as e:
         # 发生异常时回滚数据库事务
         # MySQL等价语句: ROLLBACK
         db.session.rollback()
+        logger.error(
+            'order_create_failed',
+            extra={
+                'event': 'order_create_failed',
+                'item_count': len(items),
+                'user': current_user.username
+            },
+            exc_info=(type(e), e, e.__traceback__)
+        )
         return jsonify({'error': str(e)}), 400
 
 @app.route('/api/my_orders')
@@ -365,7 +522,16 @@ def my_orders():
     ORDER BY created_at DESC;
     """
     # 查询当前用户的所有订单并按创建时间降序排列
+    g.log_user = current_user.username
     orders = Order.query.filter_by(customer_id=current_user.id).order_by(Order.created_at.desc()).all()
+    logger.debug(
+        'orders_queried',
+        extra={
+            'event': 'orders_query',
+            'user': current_user.username,
+            'order_count': len(orders)
+        }
+    )
     return jsonify([o.to_dict() for o in orders])
 
 @app.route('/') # 渲染后的index.html模板响应对象
@@ -379,8 +545,14 @@ def serve_images(filename):
     images_dir = os.path.join(base_dir, 'images')
     
     # 【调试代码】在黑框里打印出它到底在哪个路径找图片
-    print(f"DEBUG: 正在查找图片: {filename}")
-    print(f"DEBUG: 查找路径为: {os.path.join(images_dir, filename)}")
+    logger.debug(
+        'image_requested',
+        extra={
+            'event': 'image_lookup',
+            'image_name': filename,
+            'image_path': os.path.join(images_dir, filename)
+        }
+    )
     
     return send_from_directory(images_dir, filename)
 
@@ -399,7 +571,12 @@ def init_data():
         # 重新建表（根据model）
         db.create_all()
         
-        print("正在生成60本全品类书籍数据...")
+        logger.info(
+            'seed_data_started',
+            extra={
+                'event': 'seed_data_started'
+            }
+        )
 
         # 1. 建立分类树（父分类 → 子分类列表）
         cats_structure = {
@@ -531,11 +708,28 @@ def init_data():
         # 管理员（无功能）
         u = Customer(username='admin', email='admin@test.com')
         u.set_password('123456')
-        db.session.add(u) # 告诉数据库要存数据
-        db.session.commit() # 正式写入数据库
+        db.session.add(u)
+        db.session.commit()
+        logger.info(
+            'seed_data_completed',
+            extra={
+                'event': 'seed_data_completed',
+                'book_count': len(raw_books),
+                'category_count': len(cat_map),
+                'user': 'admin'
+            }
+        )
 
 if __name__ == '__main__':
-    db_path = os.path.join('instance', 'cloud_bookstore_real.db')
-    if not os.path.exists(db_path):
+    if database_uri_override:
+        init_data()
+    elif not os.path.exists(db_path):
         init_data() # 如果不存在，初始化数据库和数据
+    logger.info(
+        'application_starting',
+        extra={
+            'event': 'application_starting',
+            'database_path': database_uri_override or db_path
+        }
+    )
     app.run(debug=True)

@@ -1,0 +1,16 @@
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on http://127.0.0.1:5000
+Press CTRL+C to quit
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 730-288-124
+127.0.0.1 - - [04/Jun/2026 12:56:02] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [04/Jun/2026 12:56:02] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [04/Jun/2026 12:56:02] "GET /api/books HTTP/1.1" 200 -
+127.0.0.1 - - [04/Jun/2026 12:56:03] "GET /images/Python编程——从入门到实践.jpg HTTP/1.1" 200 -
+127.0.0.1 - - [04/Jun/2026 12:56:03] "POST /api/register HTTP/1.1" 200 -
+127.0.0.1 - - [04/Jun/2026 12:56:03] "POST /api/login HTTP/1.1" 200 -
+app.py:145: LegacyAPIWarning: The Query.get() method is considered legacy as of the 1.x series of SQLAlchemy and becomes a legacy construct in 2.0. The method is now available as Session.get() (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+app.py:454: LegacyAPIWarning: The Query.get() method is considered legacy as of the 1.x series of SQLAlchemy and becomes a legacy construct in 2.0. The method is now available as Session.get() (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+127.0.0.1 - - [04/Jun/2026 12:56:03] "POST /api/order HTTP/1.1" 200 -
+127.0.0.1 - - [04/Jun/2026 12:56:03] "GET /api/my_orders HTTP/1.1" 200 -
